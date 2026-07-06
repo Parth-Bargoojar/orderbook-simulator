@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Order Book Matching Engine — Educational Simulator</title>
+
+<!-- ======================= CDN DEPENDENCIES (the only two external resources) ======================= -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<!-- ======================= TAILWIND THEME CONFIG ======================= -->
+<script>
+  // Extend Tailwind with a dark-mode-safe palette. Bid green is unchanged from the
+  // light-mode spec; ask red is shifted to a brighter shade (validated for contrast
+  // and colorblind separation against a near-black surface — the light-mode hex
+  // reads too dark on dark backgrounds).
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bid:    '#16A34A',   // buy / up green
+          ask:    '#EF4444',   // sell / down red (dark-mode variant)
+          accent: '#6366F1',   // neutral primary accent (focus rings, confirm actions)
+          ink:    '#F3F4F6',   // primary text on dark surfaces
+          muted:  '#9CA3AF'    // secondary text on dark surfaces
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  };
+</script>
+
+<!-- ======================= COMPONENT CSS (things Tailwind utilities can't express cleanly) ======================= -->
+<style>
+  /* Apple-style aurora backdrop: soft color glows over near-black, fixed to viewport. */
+  body {
+    background-color: #05060A;
+    background-image:
+      radial-gradient(circle at 12% 8%,  rgba(99, 102, 241, 0.16), transparent 42%),
+      radial-gradient(circle at 88% 92%, rgba(22, 163, 74, 0.12),  transparent 45%),
+      radial-gradient(circle at 90% 8%,  rgba(239, 68, 68, 0.08),  transparent 40%),
+      linear-gradient(180deg, #0B0D12 0%, #060709 100%);
+    background-attachment: fixed;
+  }
+
+  /* Apple-style frosted glass card: translucent gradient fill, hairline border,
+     layered shadow (soft ambient drop + a 1px inner highlight to catch light). */
+  .glass {
+    background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.02));
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 20px 40px -12px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07);
+  }
+
+  /* Recessed "well" look for the chart surface, distinct from the raised glass cards. */
+  .glass-well {
+    background: linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.10));
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: inset 0 2px 12px rgba(0,0,0,0.5);
+  }
+
+  /* Dark glass input field. */
+  .field {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.3);
+    color: #F3F4F6;
+  }
+  .field::placeholder { color: rgba(156,163,175,0.55); }
+  .field:focus { outline: none; border-color: rgba(99,102,241,0.6); box-shadow: 0 0 0 3px rgba(99,102,241,0.25); }
+
+  /* Order-book row: 3 columns — price | volume | relative-volume bar */
+  .book-row {
+    display: grid;
+    grid-template-columns: 5.5rem 3.5rem 1fr;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.28rem 0.75rem;
+    border-left: 2px solid transparent; /* becomes colored for user-created levels */
+    min-height: 1.85rem;
+  }
+  /* Distinct accent for price levels created by the user's own limit orders */
+  .book-row.user-ask { border-left-color: #EF4444; }
+  .book-row.user-bid { border-left-color: #16A34A; }
+
+  /* Track + fill for the horizontal volume bar */
+  .vol-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; }
+  .vol-fill  { height: 100%; border-radius: 3px; }
+
+  /* Numeric type: tabular figures so prices/volumes don't jitter horizontally as they update. */
+  .tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+  /* Number inputs: kill spinner arrows for a cleaner monospace look (optional nicety) */
+  input[type="number"] { -moz-appearance: textfield; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Buttons: subtle lift + brightness on hover, dampened on press. */
+  .btn { transition: transform 0.15s ease, filter 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease; }
+  .btn:hover:not(:disabled)   { transform: translateY(-1px); filter: brightness(1.08); }
+  .btn:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
+  button:disabled { opacity: 0.35; cursor: not-allowed; transform: none !important; }
+
+  /* Thin, dark-mode scrollbar for the trade log if it ever overflows. */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+
+<body class="text-ink font-sans antialiased min-h-screen">
+
+  <!-- ======================= PAGE HEADER ======================= -->
+  <header class="max-w-7xl mx-auto px-6 pt-10 pb-6">
+    <div class="relative inline-flex items-center gap-2.5">
+      <h1 class="text-[26px] sm:text-3xl font-bold tracking-tight leading-tight bg-gradient-to-b from-white to-white/60 bg-clip-text text-transparent">
+        Order Book Matching Engine
+      </h1>
+
+      <!-- Hint icon: hover/focus (desktop) or tap (touch) reveals what this simulator does -->
+      <button id="hint-btn" type="button"
+              class="btn shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-muted hover:text-accent hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-accent/50"
+              aria-expanded="false" aria-describedby="hint-popover" aria-label="What does this simulator do?">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+          <circle cx="12" cy="12" r="9"></circle>
+          <line x1="12" y1="16" x2="12" y2="11"></line>
+          <line x1="12" y1="8" x2="12.01" y2="8"></line>
+        </svg>
+      </button>
+
+      <!-- Popover: hidden by default, revealed via GSAP on hover / focus / click -->
+      <div id="hint-popover" role="tooltip"
+           class="glass absolute left-0 top-full mt-3 w-80 max-w-[85vw] rounded-2xl p-4 text-sm leading-relaxed text-muted z-30"
+           style="opacity:0; visibility:hidden;">
+        Educational simulator — place limit orders to add liquidity, fire market orders to consume it,
+        and watch slippage carve the candle in real time. Price–time priority, FIFO within a level.
+      </div>
+    </div>
+  </header>
+
+  <!-- ======================= 3-COLUMN GRID (stacks Visualizer → Book → Controls below 1024px) ======================= -->
+  <main class="max-w-7xl mx-auto px-6 pb-10 grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)_340px] gap-5 items-start">
+
+    <!-- ================================================================
+         LEFT COLUMN — ORDER BOOK
+         ================================================================ -->
+    <section class="glass order-2 lg:order-1 rounded-2xl overflow-hidden" aria-label="Order book">
+      <div class="px-4 py-3.5 border-b border-white/10 flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold text-white tracking-tight">Order Book</h2>
+        <span class="text-[11px] text-muted tracking-wide">8 × 8 DEPTH</span>
+      </div>
+
+      <!-- Column headers -->
+      <div class="book-row text-[10px] uppercase tracking-widest text-muted font-medium border-b border-white/5">
+        <span>Price</span><span class="text-right">Vol</span><span>Depth</span>
+      </div>
+
+      <!-- Asks (highest price at top, best ask just above spread) -->
+      <div id="ob-asks"></div>
+
+      <!-- Spread row: best bid · spread · best ask -->
+      <div id="ob-spread" class="flex items-center justify-center gap-3 py-2.5 px-2 bg-white/[0.04] border-y border-white/10 font-mono text-sm font-bold tnum">
+        <span id="spread-bid" class="text-bid">—</span>
+        <span class="text-muted text-[10px] font-sans font-semibold tracking-widest uppercase">Spread</span>
+        <span id="spread-val" class="text-white">—</span>
+        <span class="text-muted text-xs font-sans">·</span>
+        <span id="spread-ask" class="text-ask">—</span>
+      </div>
+
+      <!-- Bids (best bid just below spread, lowest at bottom) -->
+      <div id="ob-bids"></div>
+    </section>
+
+    <!-- ================================================================
+         CENTER COLUMN — LIVE CANDLE VISUALIZER
+         ================================================================ -->
+    <section class="glass order-1 lg:order-2 rounded-2xl" aria-label="Live candle visualizer">
+      <div class="px-5 py-3.5 border-b border-white/10 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-white tracking-tight">Session Candle</h2>
+        <span class="text-[11px] text-muted tracking-wide">1 CANDLE = 1 SESSION</span>
+      </div>
+
+      <!-- Session O/H/L/C readout -->
+      <div class="grid grid-cols-4 gap-2 px-5 pt-4 text-center">
+        <div><div class="text-[10px] uppercase tracking-widest text-muted font-medium">Open</div><div id="lbl-open"   class="font-mono tnum text-base text-white mt-0.5">100.00</div></div>
+        <div><div class="text-[10px] uppercase tracking-widest text-muted font-medium">High</div><div id="lbl-high"   class="font-mono tnum text-base text-white mt-0.5">100.00</div></div>
+        <div><div class="text-[10px] uppercase tracking-widest text-muted font-medium">Low</div> <div id="lbl-low"    class="font-mono tnum text-base text-white mt-0.5">100.00</div></div>
+        <div><div class="text-[10px] uppercase tracking-widest text-muted font-medium">Current</div><div id="lbl-current" class="font-mono tnum text-base font-bold mt-0.5">100.00</div></div>
+      </div>
+
+      <!-- Chart area: gridlines + wick + body, all absolutely positioned; JS maps price → pixels -->
+      <div class="p-5">
+        <div id="chart" class="glass-well relative h-[440px] rounded-xl overflow-hidden">
+          <div id="gridlines" class="absolute inset-0"></div>
+          <!-- Wick: 2px line spanning session high → low -->
+          <div id="wick" class="absolute left-1/2 -ml-px w-[2px] bg-white/50 rounded-full" style="top:0;height:0;"></div>
+          <!-- Body: open ↔ current price -->
+          <div id="candle-body" class="absolute left-1/2 -ml-8 w-16 rounded-[4px] shadow-[0_0_16px_-2px_rgba(0,0,0,0.6)]" style="top:0;height:0;background:#16A34A;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================
+         RIGHT COLUMN — CONTROL PANEL + TRADE LOG
+         ================================================================ -->
+    <section class="order-3 flex flex-col gap-5" aria-label="Control panel">
+
+      <!-- ---------- Add Limit Order ---------- -->
+      <div class="glass rounded-2xl p-5">
+        <h2 class="text-sm font-semibold text-white tracking-tight mb-3.5">Add Limit Order</h2>
+
+        <!-- Side toggle -->
+        <div class="grid grid-cols-2 gap-2 mb-3.5" role="group" aria-label="Order side">
+          <button id="side-buy"  class="btn py-2 rounded-xl text-sm font-semibold border"></button>
+          <button id="side-sell" class="btn py-2 rounded-xl text-sm font-semibold border"></button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 mb-3.5">
+          <label class="block">
+            <span class="text-[11px] text-muted font-medium">Price</span>
+            <input id="limit-price" type="number" step="0.01" min="0.01" placeholder="99.50"
+                   class="field mt-1 w-full rounded-xl px-3 py-2 font-mono tnum text-sm" />
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-muted font-medium">Volume</span>
+            <input id="limit-vol" type="number" step="1" min="1" placeholder="10"
+                   class="field mt-1 w-full rounded-xl px-3 py-2 font-mono tnum text-sm" />
+          </label>
+        </div>
+
+        <button id="btn-place" class="btn w-full py-2.5 rounded-xl text-sm font-semibold text-white bg-accent shadow-lg shadow-accent/25">
+          Place Order
+        </button>
+        <p id="limit-error" class="text-xs text-ask mt-2 min-h-[1rem] leading-relaxed" role="alert"></p>
+      </div>
+
+      <!-- ---------- Market Order ---------- -->
+      <div class="glass rounded-2xl p-5">
+        <h2 class="text-sm font-semibold text-white tracking-tight mb-3.5">Market Order</h2>
+
+        <label class="block mb-3.5">
+          <span class="text-[11px] text-muted font-medium">Volume</span>
+          <input id="mkt-vol" type="number" step="1" min="1" placeholder="15"
+                 class="field mt-1 w-full rounded-xl px-3 py-2 font-mono tnum text-sm" />
+        </label>
+
+        <!-- Buy = green (buying is an "up" action); Sell = red (selling is a "down" action) -->
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-mbuy"  class="btn py-2.5 rounded-xl text-sm font-semibold text-white bg-bid shadow-lg shadow-bid/20">Buy @ Market</button>
+          <button id="btn-msell" class="btn py-2.5 rounded-xl text-sm font-semibold text-white bg-ask shadow-lg shadow-ask/20">Sell @ Market</button>
+        </div>
+
+        <p id="mkt-liquidity" class="text-xs text-muted mt-3 font-mono tnum"></p>
+        <p id="mkt-error" class="text-xs text-ask mt-1 min-h-[1rem] leading-relaxed" role="alert"></p>
+      </div>
+
+      <!-- ---------- Session / Book resets ---------- -->
+      <div class="glass rounded-2xl p-5 grid grid-cols-2 gap-2">
+        <button id="btn-reset-session" class="btn py-2.5 rounded-xl text-sm font-semibold border border-white/10 bg-white/[0.04] text-ink hover:bg-white/[0.08]">
+          Reset Session
+        </button>
+        <button id="btn-reset-book" class="btn py-2.5 rounded-xl text-sm font-semibold border border-white/10 bg-white/[0.04] text-ink hover:bg-white/[0.08]">
+          Reset Book
+        </button>
+      </div>
+
+      <!-- ---------- Trade log (last 10, newest first) ---------- -->
+      <div class="glass rounded-2xl p-5">
+        <h2 class="text-sm font-semibold text-white tracking-tight mb-2.5">Trade Log <span class="text-xs text-muted font-normal">(last 10)</span></h2>
+        <div id="trade-log" class="font-mono tnum text-xs space-y-1.5 max-h-64 overflow-y-auto pr-1">
+          <p class="text-muted font-sans">No trades yet — fire a market order.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<!-- ======================= SIMULATOR LOGIC ======================= -->
+<script>
+'use strict';
+
+/* =====================================================================
+   CONSTANTS & STATE
+   ===================================================================== */
+
+// Fixed starting price levels per spec.
+const INIT_ASK_PRICES = [100.50, 101.00, 101.50, 102.00, 102.50, 103.00, 103.50, 104.00];
+const INIT_BID_PRICES = [ 99.50,  99.00,  98.50,  98.00,  97.50,  97.00,  96.50,  96.00];
+const BOOK_DEPTH = 8;                 // visible rows per side, always padded to this
+const EPS = 1e-4;                     // float-safe price comparison tolerance
+
+// Dark-mode-validated hex pair (kept in sync with the Tailwind config above).
+const ASK_HEX = '#EF4444', ASK_RGB = '239,68,68';
+const BID_HEX = '#16A34A', BID_RGB = '22,163,74';
+
+// Core engine state.
+let currentPrice  = 100.00;
+let orderBookAsks = [];               // [{price, volume, isUser}] sorted ASCENDING by price
+let orderBookBids = [];               // [{price, volume, isUser}] sorted DESCENDING by price
+let session       = { open: 100, high: 100, low: 100, current: 100 };
+let trades        = [];               // [{side, price, volume, time}] newest first, capped at 10
+
+// Chart view range (price → pixel mapping bounds); recomputed as the session expands.
+let viewMin = 95.5, viewMax = 104.5;
+
+// Active GSAP timeline for candle stepping (killed/fast-forwarded if a new order arrives mid-animation).
+let candleTl = null;
+
+/* =====================================================================
+   DOM HANDLES
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+const els = {
+  asks: $('ob-asks'), bids: $('ob-bids'),
+  spreadBid: $('spread-bid'), spreadAsk: $('spread-ask'), spreadVal: $('spread-val'),
+  chart: $('chart'), grid: $('gridlines'), wick: $('wick'), body: $('candle-body'),
+  lblOpen: $('lbl-open'), lblHigh: $('lbl-high'), lblLow: $('lbl-low'), lblCurrent: $('lbl-current'),
+  sideBuy: $('side-buy'), sideSell: $('side-sell'),
+  limitPrice: $('limit-price'), limitVol: $('limit-vol'), btnPlace: $('btn-place'), limitError: $('limit-error'),
+  mktVol: $('mkt-vol'), btnMBuy: $('btn-mbuy'), btnMSell: $('btn-msell'),
+  mktError: $('mkt-error'), mktLiquidity: $('mkt-liquidity'),
+  btnResetSession: $('btn-reset-session'), btnResetBook: $('btn-reset-book'),
+  tradeLog: $('trade-log'),
+  hintBtn: $('hint-btn'), hintPopover: $('hint-popover')
+};
+
+// Currently selected limit-order side ('buy' | 'sell').
+let limitSide = 'buy';
+
+// Header hint popover: `open` tracks visibility, `pinned` tracks whether a
+// click (rather than hover/focus) is holding it open.
+let hintOpen = false;
+let hintPinned = false;
+
+/* =====================================================================
+   SMALL HELPERS
+   ===================================================================== */
+
+// Random integer in [min, max] inclusive — used for dummy liquidity.
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Format a price to exactly 2 decimals for display.
+function fmt(p) { return p.toFixed(2); }
+
+// Float-safe equality for price levels.
+function samePrice(a, b) { return Math.abs(a - b) < EPS; }
+
+// Sum of all volume on one side of the book.
+function totalVolume(book) { return book.reduce((s, l) => s + l.volume, 0); }
+
+/* =====================================================================
+   INITIALIZATION — on load and on "Reset Book"
+   ===================================================================== */
+
+// Rebuild the book to its pristine starting state: 8 asks + 8 bids with
+// randomized 5–25 volume, price back to 100.00, fresh session.
+function initBook() {
+  currentPrice  = 100.00;
+  orderBookAsks = INIT_ASK_PRICES.map(p => ({ price: p, volume: randInt(5, 25), isUser: false }));
+  orderBookBids = INIT_BID_PRICES.map(p => ({ price: p, volume: randInt(5, 25), isUser: false }));
+  session = { open: 100, high: 100, low: 100, current: 100 };
+  clearMessages();
+  updateViewRange();
+  drawGridlines();
+  renderBook();
+  renderCandleImmediate();
+  updatePriceLabels(session);
+}
+
+/* =====================================================================
+   MATCHING ENGINE — price-time priority, FIFO within a level
+   ===================================================================== */
+
+// Consume liquidity from the opposing side of the book.
+//   side:       'buy' walks up the asks (lowest first); 'sell' walks down the bids (highest first)
+//   qty:        contracts requested
+//   limitPrice: null for pure market orders; for marketable limits, matching
+//               stops once the best level is worse than this price
+// Returns { steps, filled, remaining } where each step is one level (fully or
+// partially) consumed — steps drive both the trade log and the candle animation.
+function matchOrder(side, qty, limitPrice = null) {
+  const book = side === 'buy' ? orderBookAsks : orderBookBids;
+  const steps = [];
+  let remaining = qty;
+
+  while (remaining > 0 && book.length > 0) {
+    const best = book[0]; // best ask (lowest) or best bid (highest) — index 0 by sort order
+
+    // Marketable-limit guard: stop when the book gets worse than the limit price.
+    if (limitPrice !== null) {
+      if (side === 'buy'  && best.price > limitPrice + EPS) break;
+      if (side === 'sell' && best.price < limitPrice - EPS) break;
+    }
+
+    const take = Math.min(best.volume, remaining);
+    best.volume -= take;
+    remaining   -= take;
+    steps.push({ price: best.price, volume: take });
+
+    // Level fully consumed → remove it from the book entirely.
+    if (best.volume <= 0) book.shift();
+  }
+
+  return { steps, filled: qty - remaining, remaining };
+}
+
+// Apply the results of a fill: advance currentPrice through each consumed level,
+// update the session OHLC, log every execution, and animate the candle stepping
+// through intermediate prices (this is the slippage visualization).
+function processExecution(takerSide, steps) {
+  if (!steps.length) return;
+
+  // Build one session snapshot per step so the candle can replay them in order.
+  const snaps = [];
+  let hi = session.high, lo = session.low;
+  for (const s of steps) {
+    hi = Math.max(hi, s.price);
+    lo = Math.min(lo, s.price);
+    snaps.push({ open: session.open, high: hi, low: lo, current: s.price });
+  }
+
+  // Commit final engine state immediately (visuals catch up via GSAP).
+  currentPrice = steps[steps.length - 1].price;
+  session = snaps[snaps.length - 1];
+
+  // Log each level execution (newest on top, keep 10).
+  const time = new Date().toLocaleTimeString('en-GB');
+  for (const s of steps) trades.unshift({ side: takerSide, price: s.price, volume: s.volume, time });
+  trades = trades.slice(0, 10);
+  renderTradeLog();
+
+  // Rescale chart if the session pushed outside the current view, then animate.
+  updateViewRange();
+  drawGridlines();
+  animateCandleSteps(snaps);
+}
+
+/* =====================================================================
+   LIMIT ORDER HANDLING
+   ===================================================================== */
+
+// Rest a (remainder of a) limit order in the book: merge into an existing level
+// at the same price, or insert a new level keeping the side's sort order.
+// Any level the user adds volume to gets the user accent border.
+function restLimitOrder(side, price, volume) {
+  const book = side === 'buy' ? orderBookBids : orderBookAsks;
+  const existing = book.find(l => samePrice(l.price, price));
+  if (existing) {
+    existing.volume += volume;
+    existing.isUser = true;
+  } else {
+    book.push({ price, volume, isUser: true });
+    // bids: descending, asks: ascending
+    book.sort((a, b) => side === 'buy' ? b.price - a.price : a.price - b.price);
+  }
+}
+
+// "Place Order" click: validate, then either execute as a marketable limit
+// (crosses the spread → same matching logic as a market order) or rest in the book.
+function handlePlaceLimit() {
+  clearMessages();
+  const price  = Number(els.limitPrice.value);
+  const volume = Number(els.limitVol.value);
+
+  // Validation: numeric, price > 0 with 2-decimal precision, integer volume ≥ 1.
+  if (!els.limitPrice.value || !Number.isFinite(price) || price <= 0) {
+    return showError(els.limitError, 'Enter a valid price greater than 0.');
+  }
+  if (!els.limitVol.value || !Number.isFinite(volume) || !Number.isInteger(volume) || volume < 1) {
+    return showError(els.limitError, 'Volume must be a whole number ≥ 1.');
+  }
+  const px = Math.round(price * 100) / 100; // snap to 2 decimals
+
+  const bestAsk = orderBookAsks[0];
+  const bestBid = orderBookBids[0];
+  const crosses = (limitSide === 'buy'  && bestAsk && px >= bestAsk.price - EPS) ||
+                  (limitSide === 'sell' && bestBid && px <= bestBid.price + EPS);
+
+  const flash = new Set();
+
+  if (crosses) {
+    // Marketable limit: execute against the book up to the limit price…
+    const result = matchOrder(limitSide, volume, px);
+    result.steps.forEach(s => flash.add(fmt(s.price)));
+    processExecution(limitSide, result.steps);
+    // …and rest whatever couldn't fill at the limit price.
+    if (result.remaining > 0) {
+      restLimitOrder(limitSide, px, result.remaining);
+      flash.add(fmt(px));
+      showError(els.limitError, `Filled ${result.filled}/${volume}; remaining ${result.remaining} resting @ ${fmt(px)}.`, true);
+    }
+  } else {
+    // Passive limit: just add liquidity.
+    restLimitOrder(limitSide, px, volume);
+    flash.add(fmt(px));
+  }
+
+  renderBook(flash);
+  els.limitPrice.value = '';
+  els.limitVol.value = '';
+}
+
+/* =====================================================================
+   MARKET ORDER HANDLING
+   ===================================================================== */
+
+// Market buy/sell click: validate volume, sweep the opposing side, and flag
+// partial fills when the book runs out of liquidity.
+function handleMarket(side) {
+  clearMessages();
+  const volume = Number(els.mktVol.value);
+
+  if (!els.mktVol.value || !Number.isFinite(volume) || !Number.isInteger(volume) || volume < 1) {
+    return showError(els.mktError, 'Volume must be a whole number ≥ 1.');
+  }
+
+  const opposing = side === 'buy' ? orderBookAsks : orderBookBids;
+  if (opposing.length === 0) {
+    return showError(els.mktError, 'No liquidity on that side — add limit orders first.');
+  }
+
+  const result = matchOrder(side, volume, null);
+  const flash = new Set(result.steps.map(s => fmt(s.price)));
+  processExecution(side, result.steps);
+
+  // Partial fill: book exhausted before the full size could execute.
+  if (result.remaining > 0) {
+    showError(els.mktError, `Only ${result.filled}/${volume} filled — book exhausted.`);
+  }
+
+  renderBook(flash); // also disables the exhausted side's button
+  els.mktVol.value = '';
+}
+
+/* =====================================================================
+   ORDER BOOK RENDERING
+   ===================================================================== */
+
+// Build one book row element. `level` is null for greyed padding rows.
+//   sideClass: 'ask' | 'bid' — controls tint hue and user-accent class.
+//   maxVol:    largest volume in the whole book (drives bar width + tint opacity).
+//   flash:     Set of price strings to highlight with a GSAP pulse.
+function buildRow(level, sideClass, maxVol, flash) {
+  const row = document.createElement('div');
+  row.className = 'book-row';
+
+  if (!level) {
+    // Padding row — keeps the ladder at exactly 8 visible levels per side.
+    row.innerHTML = `<span class="font-mono text-sm text-white/10">—</span>
+                     <span class="font-mono text-sm text-white/10 text-right">—</span>
+                     <div class="vol-track"></div>`;
+    return row;
+  }
+
+  const rel = Math.max(level.volume / maxVol, 0.04);                 // relative volume 0–1
+  const rgb = sideClass === 'ask' ? ASK_RGB : BID_RGB;
+  row.style.background = `rgba(${rgb}, ${(0.06 + 0.26 * rel).toFixed(3)})`;
+  if (level.isUser) row.classList.add(sideClass === 'ask' ? 'user-ask' : 'user-bid');
+  row.dataset.price = fmt(level.price);
+
+  row.innerHTML = `
+    <span class="font-mono tnum text-sm ${sideClass === 'ask' ? 'text-ask' : 'text-bid'} font-semibold">${fmt(level.price)}</span>
+    <span class="font-mono tnum text-sm text-ink text-right">${level.volume}</span>
+    <div class="vol-track"><div class="vol-fill" style="width:${(rel * 100).toFixed(1)}%;background:rgba(${rgb},0.7)"></div></div>`;
+
+  // Pulse rows whose liquidity just changed (consumed or newly added).
+  if (flash && flash.has(fmt(level.price))) {
+    gsap.from(row, { backgroundColor: `rgba(${rgb}, 0.5)`, duration: 0.4, ease: 'power2.out' });
+    gsap.from(row.querySelector('.vol-fill'), { scaleX: 0, transformOrigin: 'left', duration: 0.3, ease: 'power2.out' });
+  }
+  return row;
+}
+
+// Re-render both ladders, the spread row, liquidity helper text, and
+// enable/disable market buttons based on remaining liquidity.
+function renderBook(flash = null) {
+  const maxVol = Math.max(1, ...orderBookAsks.map(l => l.volume), ...orderBookBids.map(l => l.volume));
+
+  // Asks: show the 8 levels closest to the spread, highest at top; pad ABOVE.
+  els.asks.innerHTML = '';
+  const askView = orderBookAsks.slice(0, BOOK_DEPTH).reverse();
+  for (let i = 0; i < BOOK_DEPTH - askView.length; i++) els.asks.appendChild(buildRow(null, 'ask', maxVol, null));
+  askView.forEach(l => els.asks.appendChild(buildRow(l, 'ask', maxVol, flash)));
+
+  // Bids: show the 8 highest, best at top (just under spread); pad BELOW.
+  els.bids.innerHTML = '';
+  const bidView = orderBookBids.slice(0, BOOK_DEPTH);
+  bidView.forEach(l => els.bids.appendChild(buildRow(l, 'bid', maxVol, flash)));
+  for (let i = 0; i < BOOK_DEPTH - bidView.length; i++) els.bids.appendChild(buildRow(null, 'bid', maxVol, null));
+
+  // Spread row: best bid / spread / best ask.
+  const bestBid = orderBookBids[0], bestAsk = orderBookAsks[0];
+  els.spreadBid.textContent = bestBid ? fmt(bestBid.price) : '—';
+  els.spreadAsk.textContent = bestAsk ? fmt(bestAsk.price) : '—';
+  els.spreadVal.textContent = (bestBid && bestAsk) ? fmt(bestAsk.price - bestBid.price) : '—';
+
+  // Liquidity totals + market-button availability (re-enabled once liquidity returns).
+  const askLiq = totalVolume(orderBookAsks), bidLiq = totalVolume(orderBookBids);
+  els.mktLiquidity.textContent = `Available — asks: ${askLiq} · bids: ${bidLiq}`;
+  els.mktVol.max = Math.max(askLiq, bidLiq, 1);
+  els.btnMBuy.disabled  = askLiq === 0;
+  els.btnMSell.disabled = bidLiq === 0;
+}
+
+/* =====================================================================
+   CANDLE VISUALIZER
+   ===================================================================== */
+
+// Expand the price → pixel view range so the whole session (plus padding)
+// always fits; never narrower than the initial book span.
+function updateViewRange() {
+  viewMin = Math.min(95.5, session.low  - 0.75);
+  viewMax = Math.max(104.5, session.high + 0.75);
+}
+
+// Map a price to a vertical pixel offset inside #chart (top = viewMax).
+function yFromPrice(p) {
+  const h = els.chart.clientHeight;
+  return h - ((p - viewMin) / (viewMax - viewMin)) * h;
+}
+
+// Compute the pixel geometry (wick + body rects, body color) for a session snapshot.
+function candleGeometry(s) {
+  const yHigh = yFromPrice(s.high), yLow = yFromPrice(s.low);
+  const yOpen = yFromPrice(s.open), yCur = yFromPrice(s.current);
+  return {
+    wickTop:    yHigh,
+    wickHeight: Math.max(yLow - yHigh, 2),
+    bodyTop:    Math.min(yOpen, yCur),
+    bodyHeight: Math.max(Math.abs(yCur - yOpen), 3),          // 3px doji minimum
+    color:      s.current >= s.open - EPS ? BID_HEX : ASK_HEX
+  };
+}
+
+// Redraw horizontal price gridlines for the current view range (no animation —
+// these are recessive scaffolding, not data).
+function drawGridlines() {
+  els.grid.innerHTML = '';
+  for (let p = Math.ceil(viewMin); p <= Math.floor(viewMax); p++) {
+    const y = yFromPrice(p);
+    const line = document.createElement('div');
+    line.className = 'absolute left-0 right-0 border-t border-white/[0.06]';
+    line.style.top = `${y}px`;
+    const lbl = document.createElement('span');
+    lbl.className = 'absolute left-2 -translate-y-1/2 text-[10px] font-mono tnum text-white/25';
+    lbl.style.top = `${y}px`;
+    lbl.textContent = fmt(p);
+    els.grid.appendChild(line);
+    els.grid.appendChild(lbl);
+  }
+}
+
+// Write the O/H/L/C readout for a snapshot; Current is colored by candle direction.
+function updatePriceLabels(s) {
+  els.lblOpen.textContent    = fmt(s.open);
+  els.lblHigh.textContent    = fmt(s.high);
+  els.lblLow.textContent     = fmt(s.low);
+  els.lblCurrent.textContent = fmt(s.current);
+  els.lblCurrent.classList.toggle('text-bid', s.current >= s.open - EPS);
+  els.lblCurrent.classList.toggle('text-ask', s.current <  s.open - EPS);
+}
+
+// Snap the candle to the current session with no tween (init, reset, resize).
+function renderCandleImmediate() {
+  const g = candleGeometry(session);
+  gsap.set(els.body, { top: g.bodyTop, height: g.bodyHeight, backgroundColor: g.color });
+  gsap.set(els.wick, { top: g.wickTop, height: g.wickHeight });
+}
+
+// Animate the candle through a sequence of session snapshots.
+// Multi-level fills step at 0.15s per level (the slippage visual);
+// a single price change uses the standard 0.3s tween.
+function animateCandleSteps(snaps) {
+  // If a previous animation is still running, jump it to its end state first.
+  if (candleTl) { candleTl.progress(1); candleTl.kill(); }
+
+  const dur = snaps.length > 1 ? 0.15 : 0.3;
+  candleTl = gsap.timeline();
+
+  snaps.forEach(snap => {
+    const g = candleGeometry(snap);
+    // Body and wick tween together for each step; labels update as the step lands.
+    candleTl.to(els.body, { top: g.bodyTop, height: g.bodyHeight, backgroundColor: g.color, duration: dur, ease: 'power2.out' });
+    candleTl.to(els.wick, { top: g.wickTop, height: g.wickHeight, duration: dur, ease: 'power2.out' }, '<');
+    candleTl.call(() => updatePriceLabels(snap));
+  });
+}
+
+/* =====================================================================
+   SESSION RESET — "New Candle"
+   ===================================================================== */
+
+// Start a fresh session at the current price. The old candle body fades and
+// drifts left as a ghost while the new (flat) candle forms in place.
+function resetSession() {
+  clearMessages();
+  if (candleTl) { candleTl.progress(1); candleTl.kill(); candleTl = null; }
+
+  // Ghost of the finished candle: purely cosmetic, removed when the tween ends.
+  const ghost = els.body.cloneNode();
+  els.chart.appendChild(ghost);
+  gsap.to(ghost, { x: -70, opacity: 0, duration: 0.4, ease: 'power2.out', onComplete: () => ghost.remove() });
+
+  session = { open: currentPrice, high: currentPrice, low: currentPrice, current: currentPrice };
+  updateViewRange();
+  drawGridlines();
+
+  // Collapse the live candle to a fresh doji at the open.
+  const g = candleGeometry(session);
+  gsap.set(els.body, { opacity: 0 });
+  gsap.to(els.body, { top: g.bodyTop, height: g.bodyHeight, backgroundColor: g.color, opacity: 1, duration: 0.3, ease: 'power2.out' });
+  gsap.to(els.wick, { top: g.wickTop, height: g.wickHeight, duration: 0.3, ease: 'power2.out' });
+  updatePriceLabels(session);
+}
+
+/* =====================================================================
+   TRADE LOG RENDERING
+   ===================================================================== */
+
+// Render the last-10 executions, newest on top; the newest entry slides in.
+function renderTradeLog() {
+  els.tradeLog.innerHTML = '';
+  if (!trades.length) {
+    els.tradeLog.innerHTML = '<p class="text-muted font-sans">No trades yet — fire a market order.</p>';
+    return;
+  }
+  trades.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2 py-0.5';
+    row.innerHTML = `
+      <span class="w-9 font-semibold ${t.side === 'buy' ? 'text-bid' : 'text-ask'}">${t.side === 'buy' ? 'BUY' : 'SELL'}</span>
+      <span class="w-8 text-right text-ink">${t.volume}</span>
+      <span class="text-muted">@</span>
+      <span class="text-white">${fmt(t.price)}</span>
+      <span class="ml-auto text-muted">${t.time}</span>`;
+    els.tradeLog.appendChild(row);
+    if (i === 0) gsap.from(row, { opacity: 0, y: -6, duration: 0.3, ease: 'power2.out' });
+  });
+}
+
+/* =====================================================================
+   INLINE ERROR / MESSAGE HELPERS
+   ===================================================================== */
+
+// Show an inline message under a section; `info` renders it neutral instead of red.
+function showError(el, msg, info = false) {
+  el.textContent = msg;
+  el.classList.toggle('text-ask', !info);
+  el.classList.toggle('text-muted', info);
+  gsap.from(el, { opacity: 0, duration: 0.2, ease: 'power2.out' });
+}
+
+// Clear all inline messages (called at the start of every new action).
+function clearMessages() {
+  els.limitError.textContent = '';
+  els.mktError.textContent = '';
+}
+
+/* =====================================================================
+   SIDE TOGGLE (Buy / Sell for limit orders)
+   ===================================================================== */
+
+// Repaint the Buy/Sell toggle to reflect the active side.
+function renderSideToggle() {
+  const base     = 'btn py-2 rounded-xl text-sm font-semibold border';
+  const active   = 'text-white border-transparent shadow-lg';
+  const inactive = 'bg-white/[0.04] text-muted border-white/10 hover:bg-white/[0.08]';
+  els.sideBuy.textContent  = 'Buy';
+  els.sideSell.textContent = 'Sell';
+  els.sideBuy.className  = `${base} ${limitSide === 'buy'  ? active + ' bg-bid shadow-bid/25'  : inactive}`;
+  els.sideSell.className = `${base} ${limitSide === 'sell' ? active + ' bg-ask shadow-ask/25' : inactive}`;
+}
+
+/* =====================================================================
+   HEADER HINT POPOVER — hover/focus to preview, click/tap to pin open
+   ===================================================================== */
+
+// Fade + rise the popover into view (guarded so repeated hover events don't restart the tween).
+function openHint() {
+  if (hintOpen) return;
+  hintOpen = true;
+  els.hintPopover.style.visibility = 'visible';
+  gsap.killTweensOf(els.hintPopover);
+  gsap.fromTo(els.hintPopover,
+    { opacity: 0, y: -6, scale: 0.97 },
+    { opacity: 1, y: 0, scale: 1, duration: 0.25, ease: 'power2.out' });
+  els.hintBtn.setAttribute('aria-expanded', 'true');
+}
+
+// Fade the popover out; only actually hides once no hover/focus/pin is active.
+function closeHint() {
+  if (!hintOpen) return;
+  hintOpen = false;
+  gsap.killTweensOf(els.hintPopover);
+  gsap.to(els.hintPopover, {
+    opacity: 0, y: -6, scale: 0.97, duration: 0.18, ease: 'power2.out',
+    onComplete: () => { els.hintPopover.style.visibility = 'hidden'; }
+  });
+  els.hintBtn.setAttribute('aria-expanded', 'false');
+}
+
+/* =====================================================================
+   EVENT WIRING & BOOT
+   ===================================================================== */
+
+// Desktop: hover or keyboard-focus previews the hint; it closes on leave/blur
+// unless a click has pinned it open (the touch-friendly path below).
+els.hintBtn.addEventListener('mouseenter', openHint);
+els.hintBtn.addEventListener('mouseleave', () => { if (!hintPinned) closeHint(); });
+els.hintBtn.addEventListener('focus', openHint);
+els.hintBtn.addEventListener('blur',  () => { if (!hintPinned) closeHint(); });
+
+// Click/tap toggles a pinned-open state — the primary path for touch devices,
+// which don't fire hover events.
+els.hintBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  hintPinned = !hintPinned;
+  if (hintPinned) openHint(); else closeHint();
+});
+
+// Tapping/clicking anywhere else dismisses a pinned popover.
+document.addEventListener('click', (e) => {
+  if (hintPinned && e.target !== els.hintBtn && !els.hintPopover.contains(e.target)) {
+    hintPinned = false;
+    closeHint();
+  }
+});
+
+// Escape dismisses the popover regardless of how it was opened.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && hintOpen) {
+    hintPinned = false;
+    closeHint();
+  }
+});
+
+els.sideBuy.addEventListener('click',  () => { limitSide = 'buy';  renderSideToggle(); });
+els.sideSell.addEventListener('click', () => { limitSide = 'sell'; renderSideToggle(); });
+els.btnPlace.addEventListener('click', handlePlaceLimit);
+els.btnMBuy.addEventListener('click',  () => handleMarket('buy'));
+els.btnMSell.addEventListener('click', () => handleMarket('sell'));
+els.btnResetSession.addEventListener('click', resetSession);
+els.btnResetBook.addEventListener('click', initBook);
+
+// Keep the candle geometry correct when the chart resizes (e.g. column stack/unstack).
+window.addEventListener('resize', () => { drawGridlines(); renderCandleImmediate(); });
+
+// Boot.
+renderSideToggle();
+initBook();
+renderTradeLog();
+</script>
+</body>
+</html>

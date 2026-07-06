@@ -1,0 +1,6 @@
+.claude/
+.gemini/
+.idea/
+.vscode/
+node_modules/
+*.log
