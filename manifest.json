@@ -1,0 +1,36 @@
+{
+  "name": "Order Book Matching Engine — Educational Simulator",
+  "short_name": "Matching Engine",
+  "description": "Educational simulator — place limit orders to add liquidity, fire market orders to consume it, and watch slippage carve the candle in real time.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#05060A",
+  "theme_color": "#0B0D12",
+  "categories": ["finance", "education"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
