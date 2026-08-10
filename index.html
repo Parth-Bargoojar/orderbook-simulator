@@ -81,9 +81,9 @@
   .tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
 
   /* Number inputs: kill spinner arrows for a cleaner monospace look (optional nicety) */
-  input[type="number"] { -moz-appearance: textfield; }
+  input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   input[type="number"]::-webkit-outer-spin-button,
-  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
 
   /* Buttons: subtle lift + brightness on hover, dampened on press. */
   .btn { transition: transform 0.15s ease, filter 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease; }
