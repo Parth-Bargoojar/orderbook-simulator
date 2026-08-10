@@ -6,6 +6,22 @@
   "display": "standalone",
   "background_color": "#05060A",
   "theme_color": "#0B0D12",
+  "screenshots": [
+    {
+      "src": "screenshot-mobile.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Matching Engine simulator on mobile"
+    },
+    {
+      "src": "screenshot-desktop.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Matching Engine simulator on desktop"
+    }
+  ],
   "categories": ["finance", "education"],
   "icons": [
     {

@@ -8,6 +8,8 @@ const ASSETS_TO_CACHE = [
   'icon-192-maskable.png',
   'icon-512-maskable.png',
   'favicon.png',
+  'screenshot-desktop.png',
+  'screenshot-mobile.png',
   'https://cdn.tailwindcss.com',
   'https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js'
 ];
