@@ -16,33 +16,8 @@
 <meta name="apple-mobile-web-app-title" content="Matching Engine" />
 
 <!-- ======================= CDN DEPENDENCIES (the only two external resources) ======================= -->
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="style.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-
-<!-- ======================= TAILWIND THEME CONFIG ======================= -->
-<script>
-  // Extend Tailwind with a dark-mode-safe palette. Bid green is unchanged from the
-  // light-mode spec; ask red is shifted to a brighter shade (validated for contrast
-  // and colorblind separation against a near-black surface — the light-mode hex
-  // reads too dark on dark backgrounds).
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          bid:    '#16A34A',   // buy / up green
-          ask:    '#EF4444',   // sell / down red (dark-mode variant)
-          accent: '#6366F1',   // neutral primary accent (focus rings, confirm actions)
-          ink:    '#F3F4F6',   // primary text on dark surfaces
-          muted:  '#9CA3AF'    // secondary text on dark surfaces
-        },
-        fontFamily: {
-          sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
-        }
-      }
-    }
-  };
-</script>
 
 <!-- ======================= COMPONENT CSS (things Tailwind utilities can't express cleanly) ======================= -->
 <style>

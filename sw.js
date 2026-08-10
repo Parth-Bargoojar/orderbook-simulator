@@ -10,7 +10,7 @@ const ASSETS_TO_CACHE = [
   'favicon.png',
   'screenshot-desktop.png',
   'screenshot-mobile.png',
-  'https://cdn.tailwindcss.com',
+  'style.css',
   'https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js'
 ];
 
