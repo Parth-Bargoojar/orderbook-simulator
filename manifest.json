@@ -4,8 +4,19 @@
   "description": "Educational simulator — place limit orders to add liquidity, fire market orders to consume it, and watch slippage carve the candle in real time.",
   "start_url": "./",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "minimal-ui"
+  ],
   "background_color": "#05060A",
   "theme_color": "#0B0D12",
+  "protocol_handlers": [
+    {
+      "protocol": "web+orderbook",
+      "url": "./?url=%s",
+      "title": "Order Book Matching Engine Link Handler"
+    }
+  ],
   "screenshots": [
     {
       "src": "screenshot-mobile.png",
